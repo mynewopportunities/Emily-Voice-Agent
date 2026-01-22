@@ -1,0 +1,16 @@
+{
+  "name": "livekit-hubspot-webhook",
+  "version": "1.0.0",
+  "description": "Serverless webhook handler for LiveKit to HubSpot integration",
+  "main": "api/webhooks/livekit.js",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  },
+  "dependencies": {
+    "@hubspot/api-client": "^11.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
