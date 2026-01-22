@@ -1,0 +1,133 @@
+{
+  "rule": {
+    "name": "Emily Voice Agent - HubSpot Integration",
+    "dispatchRuleIndividual": {
+      "roomPrefix": "verification-call-",
+      "agentDispatch": {
+        "agentId": "YOUR_AGENT_ID",
+        "agentName": "Emily",
+        "systemPrompt": "You are Emily, Core IT's digital verification agent. [Dynamic prompt will be injected per call]",
+        "functions": [
+          {
+            "name": "record_gatekeeper",
+            "description": "Record who answered the phone",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "full_name": { "type": "string" },
+                "first_name": { "type": "string" }
+              },
+              "required": ["full_name", "first_name"]
+            }
+          },
+          {
+            "name": "verify_address",
+            "description": "Verify or correct the physical address",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "confirmed": { "type": "boolean" },
+                "corrected_address": { "type": "string" }
+              },
+              "required": ["confirmed"]
+            }
+          },
+          {
+            "name": "verify_email",
+            "description": "Verify or correct the email address",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "confirmed": { "type": "boolean" },
+                "corrected_email": { "type": "string" }
+              },
+              "required": ["confirmed"]
+            }
+          },
+          {
+            "name": "verify_dm",
+            "description": "Verify IT Decision Maker details",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "confirmed": { "type": "boolean" },
+                "still_employed": { "type": "boolean" },
+                "corrected_name": { "type": "string" },
+                "notes": { "type": "string" }
+              },
+              "required": ["confirmed", "still_employed"]
+            }
+          },
+          {
+            "name": "collect_direct_number",
+            "description": "Collect the IT Decision Maker's direct phone number",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "provided": { "type": "boolean" },
+                "phone_number": { "type": "string" },
+                "notes": { "type": "string" }
+              },
+              "required": ["provided"]
+            }
+          },
+          {
+            "name": "end_call",
+            "description": "End the call early",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "outcome": {
+                  "type": "string",
+                  "enum": ["not_available", "declined", "wrong_number", "other"]
+                },
+                "notes": { "type": "string" }
+              },
+              "required": ["outcome"]
+            }
+          },
+          {
+            "name": "complete_call",
+            "description": "Complete the verification call successfully",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "outcome": { "type": "string", "default": "success" },
+                "notes": { "type": "string" }
+              }
+            }
+          }
+        ],
+        "llm": {
+          "provider": "openai",
+          "model": "gpt-4-turbo",
+          "temperature": 0.7,
+          "maxTokens": 500
+        },
+        "tts": {
+          "provider": "elevenlabs",
+          "voice": "Rachel"
+        },
+        "stt": {
+          "provider": "deepgram",
+          "model": "nova-2"
+        }
+      }
+    }
+  },
+  "trunkIds": [
+    "PN_PPN_ACRcLgLG8e2t"
+  ],
+  "phoneNumbers": [
+    "+13464461101"
+  ],
+  "roomConfig": {
+    "emptyTimeout": 300,
+    "maxParticipants": 3,
+    "metadata": "{\"source\":\"hubspot-integration\"}"
+  },
+  "webhook": {
+    "url": "https://livekit-hubspot-serverless.vercel.app/webhooks/livekit",
+    "events": ["function_call", "room_finished", "participant_left"]
+  }
+}

@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const config = require('../config');
 const logger = require('../utils/logger');
 const hubspotClient = require('../hubspot/client');
+const googleSheetsClient = require('../google-sheets/client');
 const livekitAgent = require('../livekit/agent');
 
 class WebhookHandler {
@@ -83,7 +84,7 @@ class WebhookHandler {
 
     logger.info(`Processing function call: ${functionName}`, { callId, parameters });
 
-    // Get call state to find contact ID
+    // Get call state to find contact ID and source
     const callState = livekitAgent.getCallState(callId);
     
     if (!callState) {
@@ -92,91 +93,174 @@ class WebhookHandler {
     }
 
     const contactId = callState.contactId;
+    const metadata = callState.metadata || {};
+    const source = metadata.source || 'hubspot'; // Default to hubspot for backward compatibility
 
     // Update local call state
     livekitAgent.updateCallState(callId, functionName, parameters);
 
-    // Route to appropriate HubSpot update
+    // Route to appropriate update based on source
     try {
-      switch (functionName) {
-        case 'record_gatekeeper':
-          await hubspotClient.recordGatekeeper(contactId, parameters.full_name);
-          break;
-
-        case 'verify_address':
-          await hubspotClient.updateAddress(
-            contactId,
-            parameters.confirmed,
-            parameters.corrected_address
-          );
-          break;
-
-        case 'verify_email':
-          await hubspotClient.updateEmail(
-            contactId,
-            parameters.confirmed,
-            parameters.corrected_email
-          );
-          break;
-
-        case 'verify_dm':
-          await hubspotClient.updateDecisionMaker(
-            contactId,
-            parameters.confirmed,
-            parameters.still_employed,
-            parameters.corrected_name,
-            parameters.notes
-          );
-          break;
-
-        case 'collect_direct_number':
-          await hubspotClient.updateDirectNumber(
-            contactId,
-            parameters.provided,
-            parameters.phone_number,
-            parameters.notes
-          );
-          break;
-
-        case 'end_call':
-          await hubspotClient.endCall(
-            contactId,
-            parameters.outcome,
-            parameters.notes
-          );
-          // Log the call in HubSpot
-          await this.logCallToHubSpot(callId);
-          // Cleanup
-          await livekitAgent.endCall(callId);
-          break;
-
-        case 'complete_call':
-          await hubspotClient.completeCall(
-            contactId,
-            parameters.outcome,
-            parameters.notes
-          );
-          // Log the call in HubSpot
-          await this.logCallToHubSpot(callId);
-          // Cleanup
-          await livekitAgent.endCall(callId);
-          break;
-
-        default:
-          logger.warn(`Unknown function: ${functionName}`);
+      if (source === 'google_sheets') {
+        await this.updateGoogleSheets(functionName, parameters, metadata, callId);
+      } else {
+        await this.updateHubSpot(functionName, parameters, contactId, callId);
       }
 
-      logger.info(`HubSpot updated for ${functionName}`, { contactId });
+      logger.info(`${source} updated for ${functionName}`, { contactId, rowNumber: metadata.rowNumber });
     } catch (error) {
-      logger.error(`Failed to update HubSpot for ${functionName}`, { 
+      logger.error(`Failed to update ${source} for ${functionName}`, { 
         error: error.message,
         contactId,
+        rowNumber: metadata.rowNumber,
       });
     }
   }
 
   /**
-   * Logs completed call to HubSpot as an engagement
+   * Updates HubSpot for function calls (legacy support)
+   */
+  async updateHubSpot(functionName, parameters, contactId, callId) {
+    switch (functionName) {
+      case 'record_gatekeeper':
+        await hubspotClient.recordGatekeeper(contactId, parameters.full_name);
+        break;
+
+      case 'verify_address':
+        await hubspotClient.updateAddress(
+          contactId,
+          parameters.confirmed,
+          parameters.corrected_address
+        );
+        break;
+
+      case 'verify_email':
+        await hubspotClient.updateEmail(
+          contactId,
+          parameters.confirmed,
+          parameters.corrected_email
+        );
+        break;
+
+      case 'verify_dm':
+        await hubspotClient.updateDecisionMaker(
+          contactId,
+          parameters.confirmed,
+          parameters.still_employed,
+          parameters.corrected_name,
+          parameters.notes
+        );
+        break;
+
+      case 'collect_direct_number':
+        await hubspotClient.updateDirectNumber(
+          contactId,
+          parameters.provided,
+          parameters.phone_number,
+          parameters.notes
+        );
+        break;
+
+      case 'end_call':
+      case 'complete_call':
+        await hubspotClient.endCall(
+          contactId,
+          parameters.outcome,
+          parameters.notes
+        );
+        await this.logCallToHubSpot(callId);
+        await livekitAgent.endCall(callId);
+        break;
+
+      default:
+        logger.warn(`Unknown function: ${functionName}`);
+    }
+  }
+
+  /**
+   * Updates Google Sheets for function calls
+   */
+  async updateGoogleSheets(functionName, parameters, metadata, callId) {
+    const rowNumber = metadata.rowNumber;
+    if (!rowNumber) {
+      logger.error('Row number not found in metadata');
+      return;
+    }
+
+    const updates = {};
+
+    switch (functionName) {
+      case 'record_gatekeeper':
+        updates.gatekeeper_name = parameters.full_name;
+        break;
+
+      case 'verify_address':
+        if (parameters.confirmed) {
+          updates.address_verified = 'Yes';
+        } else if (parameters.corrected_address) {
+          updates.physical_address = parameters.corrected_address;
+          updates.address_verified = 'Updated';
+        }
+        break;
+
+      case 'verify_email':
+        if (parameters.confirmed) {
+          updates.email_verified = 'Yes';
+        } else if (parameters.corrected_email) {
+          updates.email_address = parameters.corrected_email;
+          updates.email_verified = 'Updated';
+        }
+        break;
+
+      case 'verify_dm':
+        if (parameters.confirmed && parameters.still_employed) {
+          updates.dm_verified = 'Yes';
+        } else if (parameters.corrected_name) {
+          updates.dm_name = parameters.corrected_name;
+          updates.dm_verified = 'Updated';
+          if (parameters.notes) {
+            updates.dm_notes = parameters.notes;
+          }
+        } else if (!parameters.still_employed) {
+          updates.dm_verified = 'No longer employed';
+          if (parameters.notes) {
+            updates.dm_notes = parameters.notes;
+          }
+        }
+        break;
+
+      case 'collect_direct_number':
+        if (parameters.provided && parameters.phone_number) {
+          updates.direct_number = parameters.phone_number;
+        } else {
+          updates.direct_number = 'Not provided';
+          if (parameters.notes) {
+            updates.direct_number_notes = parameters.notes;
+          }
+        }
+        break;
+
+      case 'end_call':
+      case 'complete_call':
+        updates.verification_status = parameters.outcome === 'success' ? 'verified' : 'failed';
+        updates.call_outcome = parameters.outcome;
+        updates.call_notes = parameters.notes || '';
+        updates.last_call_date = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+        await livekitAgent.endCall(callId);
+        break;
+
+      default:
+        logger.warn(`Unknown function: ${functionName}`);
+        return;
+    }
+
+    if (Object.keys(updates).length > 0) {
+      await googleSheetsClient.updateContact(rowNumber, updates);
+    }
+  }
+
+  /**
+   * Logs completed call to HubSpot as an engagement (legacy)
    * @param {string} callId - Call identifier
    */
   async logCallToHubSpot(callId) {
@@ -269,9 +353,21 @@ class WebhookHandler {
       // Call ended unexpectedly
       logger.warn(`Call ${call.callId} ended unexpectedly`);
       
-      // Update HubSpot
-      await hubspotClient.endCall(call.contactId, 'other', 'Call disconnected unexpectedly');
-      await this.logCallToHubSpot(call.callId);
+      const metadata = call.metadata || {};
+      const source = metadata.source || 'hubspot';
+      
+      if (source === 'google_sheets' && metadata.rowNumber) {
+        await googleSheetsClient.updateContact(metadata.rowNumber, {
+          verification_status: 'failed',
+          call_outcome: 'disconnected',
+          call_notes: 'Call disconnected unexpectedly',
+          last_call_date: new Date().toISOString().split('T')[0],
+        });
+      } else {
+        await hubspotClient.endCall(call.contactId, 'other', 'Call disconnected unexpectedly');
+        await this.logCallToHubSpot(call.callId);
+      }
+      
       await livekitAgent.endCall(call.callId);
     }
   }

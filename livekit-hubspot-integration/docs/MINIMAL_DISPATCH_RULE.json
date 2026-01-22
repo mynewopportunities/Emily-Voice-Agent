@@ -1,0 +1,15 @@
+{
+  "rule": {
+    "name": "Emily Voice Agent",
+    "dispatchRuleIndividual": {
+      "roomPrefix": "verification-call-"
+    }
+  },
+  "trunkIds": [
+    "PN_PPN_ACRcLgLG8e2t"
+  ],
+  "phoneNumbers": [
+    "+13464461101"
+  ],
+  "roomConfig": {}
+}

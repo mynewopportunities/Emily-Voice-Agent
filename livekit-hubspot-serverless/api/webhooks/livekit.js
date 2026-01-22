@@ -1,14 +1,29 @@
 /**
- * Serverless Webhook Handler for LiveKit → HubSpot
+ * Serverless Webhook Handler for LiveKit → Google Sheets
  * Deploy to Vercel, Netlify, or any serverless platform
  */
 
-const hubspot = require('@hubspot/api-client');
+const { google } = require('googleapis');
 
-// Initialize HubSpot client
-const hubspotClient = new hubspot.Client({ 
-  accessToken: process.env.HUBSPOT_ACCESS_TOKEN 
-});
+// Initialize Google Sheets client
+let sheets = null;
+let spreadsheetId = process.env.GOOGLE_SHEET_ID;
+let sheetName = process.env.GOOGLE_SHEET_NAME || 'Contacts';
+
+function initializeSheets() {
+  if (!sheets && process.env.GOOGLE_SERVICE_ACCOUNT) {
+    try {
+      const auth = new google.auth.GoogleAuth({
+        credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT),
+        scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+      });
+      sheets = google.sheets({ version: 'v4', auth });
+    } catch (error) {
+      console.error('Failed to initialize Google Sheets:', error.message);
+    }
+  }
+  return sheets;
+}
 
 /**
  * Main webhook handler
@@ -39,105 +54,201 @@ export default async function handler(req, res) {
  * Handle function calls from the voice agent
  */
 async function handleFunctionCall(event) {
-  const { functionName, parameters, metadata } = event;
+  const { functionName, parameters, callId, roomName, room } = event;
   
-  // Get contact ID from metadata (you'll set this when initiating the call)
-  const contactId = metadata?.contactId || parameters?.contactId;
+  // Try to get metadata from room metadata (stored when room was created)
+  let metadata = {};
+  let rowNumber = null;
+  let source = 'google_sheets';
   
-  if (!contactId) {
-    console.error('No contactId in function call');
+  if (room && room.metadata) {
+    try {
+      metadata = typeof room.metadata === 'string' ? JSON.parse(room.metadata) : room.metadata;
+      rowNumber = metadata.rowNumber;
+      source = metadata.source || 'google_sheets';
+    } catch (e) {
+      console.error('Failed to parse room metadata:', e);
+    }
+  }
+  
+  // Fallback to event metadata
+  if (!rowNumber && event.metadata) {
+    metadata = event.metadata;
+    rowNumber = metadata.rowNumber;
+    source = metadata.source || 'google_sheets';
+  }
+  
+  if (!rowNumber && source === 'google_sheets') {
+    console.error('No rowNumber in function call metadata. Room metadata:', metadata);
     return;
   }
 
-  console.log(`Processing ${functionName} for contact ${contactId}`);
+  console.log(`Processing ${functionName} for row ${rowNumber}`);
 
-  switch (functionName) {
-    case 'record_gatekeeper':
-      await updateContact(contactId, {
-        gatekeeper_name: parameters.full_name,
-      });
-      break;
-
-    case 'verify_address':
-      if (!parameters.confirmed && parameters.corrected_address) {
-        await updateContact(contactId, {
-          full_physical_address: parameters.corrected_address,
-        });
-      }
-      break;
-
-    case 'verify_email':
-      if (!parameters.confirmed && parameters.corrected_email) {
-        await updateContact(contactId, {
-          email: parameters.corrected_email,
-        });
-      }
-      break;
-
-    case 'verify_dm':
-      const dmUpdates = {
-        dm_employment_status: parameters.still_employed ? 'employed' : 'left',
-      };
-      if (!parameters.confirmed && parameters.corrected_name) {
-        dmUpdates.it_decision_maker = parameters.corrected_name;
-      }
-      if (parameters.notes) {
-        dmUpdates.last_call_notes = parameters.notes;
-      }
-      await updateContact(contactId, dmUpdates);
-      break;
-
-    case 'collect_direct_number':
-      if (parameters.provided && parameters.phone_number) {
-        await updateContact(contactId, {
-          it_dm_direct_number: parameters.phone_number,
-        });
-      }
-      break;
-
-    case 'end_call':
-      await updateContact(contactId, {
-        verification_status: getStatusFromOutcome(parameters.outcome),
-        last_verification_date: new Date().toISOString().split('T')[0],
-        last_call_notes: parameters.notes || `Call ended: ${parameters.outcome}`,
-      });
-      break;
-
-    case 'complete_call':
-      await updateContact(contactId, {
-        verification_status: 'verified',
-        last_verification_date: new Date().toISOString().split('T')[0],
-        last_call_notes: parameters.notes || 'Verification completed successfully',
-      });
-      break;
-
-    default:
-      console.log(`Unknown function: ${functionName}`);
+  if (source === 'google_sheets') {
+    await updateGoogleSheet(rowNumber, functionName, parameters);
+  } else {
+    // Fallback to HubSpot if source is hubspot (backward compatibility)
+    const contactId = metadata.contactId || parameters.contactId;
+    if (contactId) {
+      await updateHubSpot(contactId, functionName, parameters);
+    }
   }
 }
 
 /**
- * Update HubSpot contact
+ * Update Google Sheet row
  */
-async function updateContact(contactId, properties) {
+async function updateGoogleSheet(rowNumber, functionName, parameters) {
+  const sheetsClient = initializeSheets();
+  if (!sheetsClient) {
+    console.error('Google Sheets client not initialized');
+    return;
+  }
+
+  if (!spreadsheetId) {
+    console.error('GOOGLE_SHEET_ID not configured');
+    return;
+  }
+
   try {
-    await hubspotClient.crm.contacts.basicApi.update(contactId, { properties });
-    console.log(`Updated contact ${contactId}:`, properties);
+    // Get headers to find column indices
+    const headersResponse = await sheetsClient.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${sheetName}!1:1`,
+    });
+
+    const headers = headersResponse.data.values[0] || [];
+    const updates = {};
+
+    // Map function calls to sheet updates
+    switch (functionName) {
+      case 'record_gatekeeper':
+        updates.gatekeeper_name = parameters.full_name;
+        break;
+
+      case 'verify_address':
+        if (parameters.confirmed) {
+          updates.address_verified = 'Yes';
+        } else if (parameters.corrected_address) {
+          updates.physical_address = parameters.corrected_address;
+          updates.address_verified = 'Updated';
+        }
+        break;
+
+      case 'verify_email':
+        if (parameters.confirmed) {
+          updates.email_verified = 'Yes';
+        } else if (parameters.corrected_email) {
+          updates.email_address = parameters.corrected_email;
+          updates.email_verified = 'Updated';
+        }
+        break;
+
+      case 'verify_dm':
+        if (parameters.confirmed && parameters.still_employed) {
+          updates.dm_verified = 'Yes';
+        } else if (parameters.corrected_name) {
+          updates.dm_name = parameters.corrected_name;
+          updates.dm_verified = 'Updated';
+          if (parameters.notes) {
+            updates.dm_notes = parameters.notes;
+          }
+        } else if (!parameters.still_employed) {
+          updates.dm_verified = 'No longer employed';
+          if (parameters.notes) {
+            updates.dm_notes = parameters.notes;
+          }
+        }
+        break;
+
+      case 'collect_direct_number':
+        if (parameters.provided && parameters.phone_number) {
+          updates.direct_number = parameters.phone_number;
+        } else {
+          updates.direct_number = 'Not provided';
+          if (parameters.notes) {
+            updates.direct_number_notes = parameters.notes;
+          }
+        }
+        break;
+
+      case 'end_call':
+      case 'complete_call':
+        updates.verification_status = parameters.outcome === 'success' ? 'verified' : 'failed';
+        updates.call_outcome = parameters.outcome;
+        updates.call_notes = parameters.notes || '';
+        updates.last_call_date = new Date().toISOString().split('T')[0];
+        break;
+
+      default:
+        console.log(`Unknown function: ${functionName}`);
+        return;
+    }
+
+    // Build update requests
+    const updateRequests = [];
+    Object.keys(updates).forEach(key => {
+      const columnIndex = findColumnIndex(headers, key);
+      if (columnIndex !== -1) {
+        updateRequests.push({
+          range: `${sheetName}!${columnLetter(columnIndex)}${rowNumber + 1}`,
+          values: [[updates[key]]],
+        });
+      }
+    });
+
+    if (updateRequests.length === 0) {
+      console.warn('No matching columns found for updates');
+      return;
+    }
+
+    // Batch update
+    await sheetsClient.spreadsheets.values.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        valueInputOption: 'USER_ENTERED',
+        data: updateRequests,
+      },
+    });
+
+    console.log(`Updated row ${rowNumber} in Google Sheet`);
   } catch (error) {
-    console.error(`Failed to update contact ${contactId}:`, error.message);
+    console.error(`Failed to update Google Sheet row ${rowNumber}:`, error.message);
     throw error;
   }
 }
 
 /**
- * Map call outcome to verification status
+ * Update HubSpot contact (backward compatibility)
  */
-function getStatusFromOutcome(outcome) {
-  const statusMap = {
-    'not_available': 'unreachable',
-    'declined': 'declined',
-    'wrong_number': 'wrong_number',
-    'other': 'not_verified',
-  };
-  return statusMap[outcome] || 'not_verified';
+async function updateHubSpot(contactId, functionName, parameters) {
+  // This would require HubSpot client initialization
+  // Keeping as placeholder for backward compatibility
+  console.log(`HubSpot update for contact ${contactId} (not implemented in serverless)`);
+}
+
+/**
+ * Find column index by header name
+ */
+function findColumnIndex(headers, key) {
+  const normalizedKey = key.toLowerCase().replace(/\s+/g, '_');
+  return headers.findIndex(header => {
+    const normalizedHeader = header.toLowerCase().replace(/\s+/g, '_');
+    return normalizedHeader === normalizedKey || 
+           normalizedHeader.includes(normalizedKey) ||
+           normalizedKey.includes(normalizedHeader);
+  });
+}
+
+/**
+ * Convert column index to letter (0 = A, 1 = B, etc.)
+ */
+function columnLetter(index) {
+  let result = '';
+  while (index >= 0) {
+    result = String.fromCharCode(65 + (index % 26)) + result;
+    index = Math.floor(index / 26) - 1;
+  }
+  return result;
 }

@@ -35,6 +35,9 @@ class LiveKitAgent {
     try {
       logger.info(`Initiating call ${callId} to ${phoneNumber}`);
 
+      // Get metadata from call state if available
+      const callMetadata = contactData.metadata || {};
+      
       // Create the room
       const room = await this.roomService.createRoom({
         name: roomName,
@@ -45,6 +48,8 @@ class LiveKitAgent {
           contactId: contactData.contactId,
           phoneNumber,
           startTime: Date.now(),
+          source: callMetadata.source || 'hubspot',
+          rowNumber: callMetadata.rowNumber || null,
         }),
       });
 
@@ -65,14 +70,24 @@ class LiveKitAgent {
         startTime: Date.now(),
         systemPrompt,
         collectedData: {},
+        metadata: {}, // Store source, rowNumber, etc.
       };
       
       this.activeCalls.set(callId, callState);
 
       logger.info(`Call ${callId} room created: ${roomName}`);
 
+      // Trigger outbound call via LiveKit Cloud API
+      // Note: This requires LiveKit Cloud to be configured with telephony
+      // The actual call initiation happens through LiveKit Cloud's dashboard or API
+      // For now, we return the configuration that can be used to start the call
+      
+      // TODO: If LiveKit Cloud provides a REST API for outbound calls, use it here
+      // Example: await this.startOutboundCall(roomName, phoneNumber, agentToken);
+
+      logger.info(`Call ${callId} ready. Configure LiveKit Cloud to dial ${phoneNumber} and join room ${roomName}`);
+
       // Return configuration for LiveKit Cloud
-      // The actual agent dispatch depends on your LiveKit Cloud setup
       return {
         callId,
         roomName,
@@ -88,6 +103,14 @@ class LiveKitAgent {
             provider: 'deepgram', // or your STT provider
           },
           phoneNumber, // For SIP/PSTN integration
+        },
+        // Instructions for LiveKit Cloud configuration
+        livekitCloudSetup: {
+          action: 'dial_outbound',
+          room: roomName,
+          phoneNumber: phoneNumber,
+          agentToken: agentToken,
+          note: 'Use LiveKit Cloud dashboard or API to dial this number and connect to the room',
         },
       };
     } catch (error) {
@@ -168,6 +191,27 @@ class LiveKitAgent {
    */
   getCallState(callId) {
     return this.activeCalls.get(callId) || null;
+  }
+
+  /**
+   * Updates call metadata (source, rowNumber, etc.)
+   * @param {string} callId - Call identifier
+   * @param {Object} metadata - Metadata to store
+   */
+  updateCallMetadata(callId, metadata) {
+    const callState = this.activeCalls.get(callId);
+    
+    if (!callState) {
+      logger.warn(`Call ${callId} not found in active calls`);
+      return;
+    }
+
+    if (!callState.metadata) {
+      callState.metadata = {};
+    }
+
+    callState.metadata = { ...callState.metadata, ...metadata };
+    this.activeCalls.set(callId, callState);
   }
 
   /**

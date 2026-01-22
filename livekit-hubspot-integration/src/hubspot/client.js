@@ -378,6 +378,67 @@ class HubSpotClient {
   }
 
   /**
+   * Gets contacts that need verification calls
+   * For HubSpot Free tier - no workflows available
+   * @param {Object} options - Filter options
+   * @returns {Array} - Array of contacts needing verification
+   */
+  async getContactsNeedingVerification(options = {}) {
+    const {
+      limit = 50,
+      verificationStatus = 'not_verified',
+      hasPhone = true
+    } = options;
+
+    try {
+      // Search for contacts with specific verification status
+      const filter = {
+        propertyName: 'verification_status',
+        operator: 'EQ',
+        value: verificationStatus,
+      };
+
+      const filterGroup = {
+        filters: [filter],
+      };
+
+      // Add phone number filter if needed
+      if (hasPhone) {
+        filterGroup.filters.push({
+          propertyName: 'phone',
+          operator: 'HAS_PROPERTY',
+        });
+      }
+
+      const searchRequest = {
+        filterGroups: [filterGroup],
+        properties: FETCH_PROPERTIES,
+        limit: parseInt(limit),
+      };
+
+      const response = await this.client.crm.contacts.searchApi.doSearch(searchRequest);
+
+      // Format contacts for calling
+      const contacts = await Promise.all(
+        response.results.map(async (contact) => {
+          const formatted = this.formatForPrompt(contact.properties);
+          return {
+            contactId: contact.id,
+            formatted,
+            raw: contact.properties,
+          };
+        })
+      );
+
+      logger.info(`Found ${contacts.length} contacts needing verification`);
+      return contacts;
+    } catch (error) {
+      logger.error('Failed to get contacts needing verification', { error: error.message });
+      throw error;
+    }
+  }
+
+  /**
    * Creates custom properties if they don't exist
    * Call this during initial setup
    */

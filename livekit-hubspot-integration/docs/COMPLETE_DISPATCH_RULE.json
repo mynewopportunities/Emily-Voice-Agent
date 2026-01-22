@@ -1,0 +1,187 @@
+{
+  "rule": {
+    "name": "Emily Voice Agent",
+    "dispatchRuleIndividual": {
+      "roomPrefix": "verification-call-",
+      "agentDispatch": {
+        "agentName": "Emily",
+        "systemPrompt": "You are Emily, Core IT's digital verification agent. Your role is to verify contact information for HubSpot CRM records. Be professional, friendly, and concise. Always confirm information before updating records.",
+        "functions": [
+          {
+            "name": "record_gatekeeper",
+            "description": "Record the name of the person who answered the phone. Call this in Step 2 after they tell you their name.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "full_name": {
+                  "type": "string",
+                  "description": "The complete name they provided (e.g., 'Sarah Johnson')"
+                },
+                "first_name": {
+                  "type": "string",
+                  "description": "Just their first name for personalization (e.g., 'Sarah')"
+                }
+              },
+              "required": ["full_name", "first_name"]
+            }
+          },
+          {
+            "name": "verify_address",
+            "description": "Record the result of address verification. Call this in Step 3 after confirming or collecting the physical address.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "confirmed": {
+                  "type": "boolean",
+                  "description": "true if the address on file was confirmed correct, false if it needed to be updated or was newly collected"
+                },
+                "address": {
+                  "type": "string",
+                  "description": "The confirmed address (use when confirmed=true)"
+                },
+                "corrected_address": {
+                  "type": "string",
+                  "description": "The new or corrected address (use when confirmed=false)"
+                }
+              },
+              "required": ["confirmed"]
+            }
+          },
+          {
+            "name": "verify_email",
+            "description": "Record the result of email verification. Call this in Step 4 after confirming or collecting the email address.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "confirmed": {
+                  "type": "boolean",
+                  "description": "true if the email on file was confirmed correct, false if it needed to be updated or was newly collected"
+                },
+                "email": {
+                  "type": "string",
+                  "description": "The confirmed email address (use when confirmed=true)"
+                },
+                "corrected_email": {
+                  "type": "string",
+                  "description": "The new or corrected email address (use when confirmed=false)"
+                }
+              },
+              "required": ["confirmed"]
+            }
+          },
+          {
+            "name": "verify_dm",
+            "description": "Record the IT Decision Maker verification result. Call this in Step 5 after confirming or updating the DM information.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "confirmed": {
+                  "type": "boolean",
+                  "description": "true if the DM name on file was confirmed correct, false if it needed to be updated or was newly collected"
+                },
+                "still_employed": {
+                  "type": "boolean",
+                  "description": "true if the DM is still with the company, false if they have left"
+                },
+                "dm_name": {
+                  "type": "string",
+                  "description": "The confirmed DM name (use when confirmed=true)"
+                },
+                "corrected_name": {
+                  "type": "string",
+                  "description": "The new or corrected DM name (use when confirmed=false)"
+                },
+                "notes": {
+                  "type": "string",
+                  "description": "Additional context (e.g., 'Previous DM John Smith left 3 months ago')"
+                }
+              },
+              "required": ["confirmed", "still_employed"]
+            }
+          },
+          {
+            "name": "collect_direct_number",
+            "description": "Record whether a direct phone number for the IT Decision Maker was provided. Call this in Step 6.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "provided": {
+                  "type": "boolean",
+                  "description": "true if a direct number was provided, false if they declined or couldn't provide one"
+                },
+                "phone_number": {
+                  "type": "string",
+                  "description": "The direct phone number if provided"
+                },
+                "notes": {
+                  "type": "string",
+                  "description": "Notes if not provided (e.g., 'Company policy prevents sharing direct numbers')"
+                }
+              },
+              "required": ["provided"]
+            }
+          },
+          {
+            "name": "end_call",
+            "description": "End the call early when prospect is unavailable, declines, or for any other reason that prevents completing the verification. Call this IMMEDIATELY when the conversation cannot continue.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "outcome": {
+                  "type": "string",
+                  "enum": ["not_available", "declined", "wrong_number", "other"],
+                  "description": "Reason for ending the call: 'not_available' if busy/can't talk, 'declined' if they don't want to participate, 'wrong_number' if wrong contact, 'other' for any other reason"
+                },
+                "notes": {
+                  "type": "string",
+                  "description": "Additional context about why the call ended (e.g., 'Requested callback at 2pm', 'Asked to be removed from list')"
+                }
+              },
+              "required": ["outcome"]
+            }
+          },
+          {
+            "name": "complete_call",
+            "description": "Mark the call as successfully completed after finishing all verification steps. Call this at the end of Step 7 after the closing message.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "outcome": {
+                  "type": "string",
+                  "enum": ["success", "partial", "callback_requested"],
+                  "description": "'success' if all steps completed, 'partial' if some info was verified, 'callback_requested' if they asked for a follow-up"
+                },
+                "notes": {
+                  "type": "string",
+                  "description": "Summary notes about the call"
+                }
+              },
+              "required": ["outcome"]
+            }
+          }
+        ],
+        "llm": {
+          "provider": "openai",
+          "model": "gpt-4-turbo",
+          "temperature": 0.7,
+          "maxTokens": 500
+        },
+        "tts": {
+          "provider": "elevenlabs",
+          "voice": "Rachel"
+        },
+        "stt": {
+          "provider": "deepgram",
+          "model": "nova-2"
+        }
+      }
+    }
+  },
+  "trunkIds": [
+    "PN_PPN_ACRcLgLG8e2t"
+  ],
+  "phoneNumbers": [
+    "+13464461101"
+  ],
+  "roomConfig": {}
+}

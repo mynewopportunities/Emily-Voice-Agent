@@ -8,10 +8,13 @@ const cors = require('cors');
 const config = require('./config');
 const logger = require('./utils/logger');
 const hubspotClient = require('./hubspot/client');
+const hubspotSearch = require('./hubspot/search');
 const livekitAgent = require('./livekit/agent');
 const webhookHandler = require('./webhooks/handler');
 const { validateBusinessHours, isBusinessHours } = require('./utils/business-hours');
 const analytics = require('./utils/analytics');
+const hubspotTrigger = require('./api/hubspot-trigger');
+const googleSheetsTrigger = require('./api/google-sheets-trigger');
 
 const app = express();
 
@@ -62,22 +65,47 @@ app.get('/api/analytics', (req, res) => {
   });
 });
 
+// Search contact by phone number
+app.get('/api/search-contact', async (req, res) => {
+  try {
+    const { phoneNumber } = req.query;
+    
+    if (!phoneNumber) {
+      return res.status(400).json({ error: 'Missing phoneNumber query parameter' });
+    }
+
+    const contacts = await hubspotSearch.searchByPhone(phoneNumber);
+    res.json({ contacts, count: contacts.length });
+  } catch (error) {
+    logger.error('Failed to search contact', { error: error.message });
+    res.status(500).json({ 
+      error: 'Failed to search contact',
+      details: error.message,
+    });
+  }
+});
+
 /**
  * POST /api/initiate-call
  * Initiates a call to a HubSpot contact
  */
 app.post('/api/initiate-call', async (req, res) => {
   try {
-    // Check business hours first
-    try {
-      validateBusinessHours();
-    } catch (businessHoursError) {
-      analytics.trackBusinessHoursBlock();
-      analytics.trackCallBlocked();
-      return res.status(403).json({ 
-        error: 'Call outside business hours',
-        message: businessHoursError.message
-      });
+    // Check business hours first (unless test mode is enabled)
+    const testMode = req.body.testMode === true || process.env.TEST_MODE === 'true';
+    if (!testMode) {
+      try {
+        validateBusinessHours();
+      } catch (businessHoursError) {
+        analytics.trackBusinessHoursBlock();
+        analytics.trackCallBlocked();
+        return res.status(403).json({ 
+          error: 'Call outside business hours',
+          message: businessHoursError.message
+        });
+      }
+    } else {
+      logger.info('Test mode enabled - bypassing business hours check');
     }
 
     const { contactId, phoneNumber } = req.body;
@@ -247,6 +275,10 @@ app.post('/api/end-call/:callId', async (req, res) => {
 app.post('/webhooks/livekit', (req, res) => {
   webhookHandler.handleWebhook(req, res);
 });
+
+// HubSpot Free Tier Integration Routes (no workflows needed)
+app.use('/api/hubspot', hubspotTrigger);
+app.use('/api/google-sheets', googleSheetsTrigger);
 
 /**
  * POST /api/setup-hubspot
